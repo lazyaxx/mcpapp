@@ -53,7 +53,7 @@ class GeminiMcpService : Service() {
         // Initialize Gemini model
         generativeModel = GenerativeModel(
             modelName = "gemini-pro",
-            apiKey = "AIzaSyAL-JzJ7kmh7MePAHg2r_0s2DCgftfe5iA"
+            apiKey = "API_KEY"
         )
     }
 
