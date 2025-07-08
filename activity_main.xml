@@ -7,49 +7,51 @@
     android:padding="16dp"
     tools:context=".MainActivity">
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Gemini MCP Assistant"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:gravity="center"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Enter your task description and the assistant will break it down and execute it using available MCP tools."
-        android:textSize="14sp"
-        android:gravity="center"
-        android:layout_marginBottom="16dp" />
-
     <EditText
         android:id="@+id/editTextPrompt"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="Enter your task here... (e.g., 'Open Chrome and go to settings')"
+        android:hint="Enter your query here... (e.g., 'Open Chrome and navigate to Google')"
         android:minLines="3"
         android:maxLines="5"
         android:gravity="top|start"
         android:background="@android:drawable/edit_text"
-        android:padding="12dp"
+        android:paddingTop="64dp"
+        android:layout_marginTop="48dp"
         android:layout_marginBottom="16dp" />
 
     <Button
         android:id="@+id/buttonSend"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Submit"
+        android:text="Execute Query"
         android:textSize="16sp"
         android:layout_marginBottom="16dp" />
 
     <TextView
+        android:id="@+id/textViewStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Status updates will appear as toast messages"
-        android:textSize="12sp"
-        android:gravity="center"
-        android:textStyle="italic" />
+        android:text="Ready"
+        android:textSize="14sp"
+        android:textStyle="italic"
+        android:layout_marginBottom="16dp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/textViewResponse"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="12sp"
+            android:background="#f0f0f0"
+            android:padding="12dp"
+            android:fontFamily="monospace" />
+
+    </ScrollView>
 
 </LinearLayout>
