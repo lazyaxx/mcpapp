@@ -8,75 +8,60 @@ import android.os.Bundle
 import android.os.IBinder
 import android.widget.Button
 import android.widget.EditText
-import android.widget.Toast
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var editTextPrompt: EditText
     private lateinit var buttonSend: Button
+    private lateinit var textViewStatus: TextView
+    private lateinit var textViewResponse: TextView
 
     private var geminiMcpService: GeminiMcpService? = null
-    private var isBound = false
-    private var isServiceReady = false
+    private var bound = false
 
-    private val serviceConnection = object : ServiceConnection {
+    private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
             val binder = service as GeminiMcpService.GeminiMcpBinder
             geminiMcpService = binder.getService()
-            isBound = true
+            bound = true
 
-            // Check if service is already initialized
-            isServiceReady = geminiMcpService?.isReady() ?: false
-            updateButtonState()
-
-            // Set callback for service communication
+            // Set callback for service responses
             geminiMcpService?.setCallback(object : GeminiMcpService.GeminiMcpCallback {
-                override fun onTaskCompleted(result: String) {
+                override fun onStatusUpdate(status: String) {
                     runOnUiThread {
+                        textViewStatus.text = status
+                    }
+                }
+
+                override fun onResponse(response: String) {
+                    runOnUiThread {
+                        textViewResponse.text = response
                         buttonSend.isEnabled = true
-                        buttonSend.text = "Submit"
-                        Toast.makeText(this@MainActivity, "Task completed: $result", Toast.LENGTH_LONG).show()
                     }
                 }
 
                 override fun onError(error: String) {
                     runOnUiThread {
-                        buttonSend.isEnabled = isServiceReady
-                        buttonSend.text = if (isServiceReady) "Submit" else "Initializing..."
-                        Toast.makeText(this@MainActivity, "Error: $error", Toast.LENGTH_LONG).show()
+                        textViewResponse.text = "Error: $error"
+                        textViewStatus.text = "Ready"
+                        buttonSend.isEnabled = true
                     }
                 }
 
-                override fun onStarted() {
+                override fun onCompleted() {
                     runOnUiThread {
-                        buttonSend.isEnabled = false
-                        buttonSend.text = "Processing..."
-                        Toast.makeText(this@MainActivity, "Processing started", Toast.LENGTH_SHORT).show()
-                    }
-                }
-
-                override fun onProgress(message: String) {
-                    runOnUiThread {
-                        Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
-                    }
-                }
-
-                override fun onInitialized() {
-                    runOnUiThread {
-                        isServiceReady = true
-                        updateButtonState()
-                        Toast.makeText(this@MainActivity, "Service ready! You can now submit tasks.", Toast.LENGTH_SHORT).show()
+                        textViewStatus.text = "Task completed successfully"
+                        buttonSend.isEnabled = true
                     }
                 }
             })
         }
 
-        override fun onServiceDisconnected(className: ComponentName) {
+        override fun onServiceDisconnected(arg0: ComponentName) {
+            bound = false
             geminiMcpService = null
-            isBound = false
-            isServiceReady = false
-            updateButtonState()
         }
     }
 
@@ -86,50 +71,32 @@ class MainActivity : AppCompatActivity() {
 
         editTextPrompt = findViewById(R.id.editTextPrompt)
         buttonSend = findViewById(R.id.buttonSend)
-
-        // Initially disable button until service is ready
-        buttonSend.isEnabled = false
-        buttonSend.text = "Initializing..."
+        textViewStatus = findViewById(R.id.textViewStatus)
+        textViewResponse = findViewById(R.id.textViewResponse)
 
         buttonSend.setOnClickListener {
-            if (isServiceReady) {
-                val prompt = editTextPrompt.text.toString().trim()
-                if (prompt.isNotEmpty()) {
-                    geminiMcpService?.executeTask(prompt)
-                } else {
-                    Toast.makeText(this, "Please enter a prompt", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                Toast.makeText(this, "Service is still initializing. Please wait...", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun updateButtonState() {
-        runOnUiThread {
-            if (isServiceReady) {
-                buttonSend.isEnabled = true
-                buttonSend.text = "Submit"
-            } else {
+            val prompt = editTextPrompt.text.toString().trim()
+            if (prompt.isNotEmpty()) {
                 buttonSend.isEnabled = false
-                buttonSend.text = "Initializing..."
+                textViewResponse.text = ""
+                geminiMcpService?.processUserQuery(prompt)
             }
         }
     }
 
     override fun onStart() {
         super.onStart()
-        // Bind to service
-        val intent = Intent(this, GeminiMcpService::class.java)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        Intent(this, GeminiMcpService::class.java).also { intent ->
+            bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }
     }
 
     override fun onStop() {
         super.onStop()
-        if (isBound) {
+        if (bound) {
             geminiMcpService?.removeCallback()
-            unbindService(serviceConnection)
-            isBound = false
+            unbindService(connection)
+            bound = false
         }
     }
 }
