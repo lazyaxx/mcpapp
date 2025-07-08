@@ -27,19 +27,19 @@ class GeminiMcpService : Service() {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val mcpBaseUrl = "http://10.0.2.2:8000/mcp"
+    private val mcpBaseUrl = "http://10.0.2.2:9000/mcp"
+    private var requestId = 1
+    private var toolsList: String = ""
+    private val previousMcpResponses = mutableListOf<String>()
+    private var currentUserQuery = ""
+    private var maxIterations = 10
+    private var currentIteration = 0
 
-    // Track initialization status
-    private var isInitialized = false
-    private var toolsList = ""
-
-    // Interface for communication with activity
     interface GeminiMcpCallback {
-        fun onTaskCompleted(result: String)
+        fun onStatusUpdate(status: String)
+        fun onResponse(response: String)
         fun onError(error: String)
-        fun onStarted()
-        fun onProgress(message: String)
-        fun onInitialized()
+        fun onCompleted()
     }
 
     private var callback: GeminiMcpCallback? = null
@@ -50,313 +50,219 @@ class GeminiMcpService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize Gemini model
         generativeModel = GenerativeModel(
-            modelName = "gemini-pro",
+            modelName = "gemini-2.5-flash",
             apiKey = "API_KEY"
         )
     }
 
     override fun onBind(intent: Intent): IBinder {
-        // Start initialization when service is bound
-        if (!isInitialized) {
-            initializeService()
-        }
         return binder
     }
 
-    // Method to set callback for communication
     fun setCallback(callback: GeminiMcpCallback) {
         this.callback = callback
-        // If already initialized, notify immediately
-        if (isInitialized) {
-            callback.onInitialized()
-        }
     }
 
-    // Method to remove callback
     fun removeCallback() {
         this.callback = null
     }
 
-    // Initialize the service with MCP server
-    private fun initializeService() {
-        serviceScope.launch {
-            try {
-                callback?.onProgress("Initializing MCP connection...")
-
-                // Step 1: Get tools list from MCP server
-                callback?.onProgress("Fetching available tools...")
-                toolsList = getToolsList()
-                if (toolsList.isEmpty()) {
-                    callback?.onError("Failed to get tools list from MCP server")
-                    return@launch
-                }
-
-                // Step 2: List available devices
-                callback?.onProgress("Discovering available devices...")
-                val devicesResponse = listAvailableDevices()
-                if (devicesResponse.lowercase().contains("error")) {
-                    callback?.onError("Failed to list available devices: $devicesResponse")
-                    return@launch
-                }
-
-                // Step 3: Connect to device using mobile_use_device
-                callback?.onProgress("Connecting to device...")
-                val connectionResponse = connectToDevice()
-                if (connectionResponse.lowercase().contains("error")) {
-                    callback?.onError("Failed to connect to device: $connectionResponse")
-                    return@launch
-                }
-
-                isInitialized = true
-                callback?.onProgress("Initialization completed successfully!")
-                callback?.onInitialized()
-
-            } catch (e: Exception) {
-                Log.e("GeminiMcpService", "Error during initialization", e)
-                callback?.onError("Initialization failed: ${e.message}")
-            }
-        }
-    }
-
-    // Get tools list from MCP server
-    private suspend fun getToolsList(): String {
-        return try {
-            val json = JSONObject().apply {
-                put("jsonrpc", "2.0")
-                put("id", 1)
-                put("method", "tools/list")
-                put("params", JSONObject())
-            }
-
-            val response = callMcpServerSync(json)
-            Log.d("GeminiMcpService", "Tools list response: $response")
-            response
-        } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error getting tools list", e)
-            ""
-        }
-    }
-
-    // List available devices
-    private suspend fun listAvailableDevices(): String {
-        return try {
-            val json = JSONObject().apply {
-                put("jsonrpc", "2.0")
-                put("id", 2)
-                put("method", "tools/call")
-                put("params", JSONObject().apply {
-                    put("name", "list_available_devices")
-                    put("arguments", JSONObject())
-                })
-            }
-
-            val response = callMcpServerSync(json)
-            Log.d("GeminiMcpService", "List devices response: $response")
-            response
-        } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error listing devices", e)
-            "Error: ${e.message}"
-        }
-    }
-
-    // Connect to device using mobile_use_device
-    private suspend fun connectToDevice(): String {
-        return try {
-            val json = JSONObject().apply {
-                put("jsonrpc", "2.0")
-                put("id", 3)
-                put("method", "tools/call")
-                put("params", JSONObject().apply {
-                    put("name", "mobile_use_device")
-                    put("arguments", JSONObject().apply {
-                        put("device", "emulator-5554") // Default emulator device
-                        put("deviceType", "android")
-                    })
-                })
-            }
-
-            val response = callMcpServerSync(json)
-            Log.d("GeminiMcpService", "Device connection response: $response")
-            response
-        } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error connecting to device", e)
-            "Error: ${e.message}"
-        }
-    }
-
-    // Main method to execute the complete task
-    fun executeTask(userPrompt: String) {
-        if (userPrompt.isBlank()) {
-            callback?.onError("Prompt cannot be empty")
+    fun processUserQuery(query: String) {
+        if (query.isBlank()) {
+            callback?.onError("Query cannot be empty")
             return
         }
 
-        // Check if service is initialized
-        if (!isInitialized) {
-            callback?.onError("Service not initialized. Please wait for initialization to complete.")
-            return
-        }
-
-        callback?.onStarted()
+        currentUserQuery = query
+        currentIteration = 0
+        previousMcpResponses.clear()
 
         serviceScope.launch {
             try {
-                // Step 1: Get task breakdown from Gemini (toolsList is already available)
-                callback?.onProgress("Analyzing task and creating breakdown...")
-                val tasksList = getTaskBreakdown(toolsList, userPrompt)
-                if (tasksList.isEmpty()) {
-                    callback?.onError("Failed to get task breakdown from Gemini")
-                    return@launch
-                }
-
-                // Step 2: Execute tasks sequentially
-                callback?.onProgress("Executing tasks...")
-                var prevMcpResponse = ""
-
-                for (i in tasksList.indices) {
-                    val task = tasksList[i]
-                    callback?.onProgress("Executing task ${i + 1}/${tasksList.size}: $task")
-
-                    // Get JSON command from Gemini
-                    val jsonCommand = getJsonCommand(toolsList, task, prevMcpResponse)
-                    if (jsonCommand.isEmpty()) {
-                        callback?.onError("Failed to get JSON command for task: $task")
-                        return@launch
-                    }
-
-                    // Execute command on MCP server
-                    val mcpResponse = executeMcpCommand(jsonCommand)
-                    prevMcpResponse = mcpResponse
-
-                    // Check for errors
-                    if (mcpResponse.lowercase().contains("error") || mcpResponse.lowercase().contains("failed")) {
-                        callback?.onError("Task failed: $mcpResponse")
-                        return@launch
-                    }
-                }
-
-                callback?.onTaskCompleted("All tasks completed successfully. Final response: $prevMcpResponse")
-
+                // Step 1: Select device
+                callback?.onStatusUpdate("Selecting device...")
+                selectDevice()
             } catch (e: Exception) {
-                Log.e("GeminiMcpService", "Error executing task", e)
-                callback?.onError("Error: ${e.message}")
+                callback?.onError("Error processing query: ${e.message}")
             }
         }
     }
 
-    // Get task breakdown from Gemini
-    private suspend fun getTaskBreakdown(toolsList: String, userPrompt: String): List<String> {
-        return try {
-            val prompt = """
-            Available tools: $toolsList
-            
-            User request: $userPrompt
-            
-            Please break down this user request into specific tasks that can be executed using the available tools. 
-            Return each task on a separate line, with a brief description of what needs to be done and which tool to use.
-            Keep each task simple and specific.
-            
-            Format: Task description - Tool to use
-            Example: Launch Chrome browser - mobile_launch_app
-            """.trimIndent()
-
-            val response = generativeModel.generateContent(prompt)
-            val responseText = response.text ?: ""
-
-            Log.d("GeminiMcpService", "Task breakdown response: $responseText")
-
-            // Split into individual tasks
-            responseText.split("\n").filter { it.isNotBlank() }
-
-        } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error getting task breakdown", e)
-            emptyList()
+    private suspend fun selectDevice() {
+        val deviceSelection = JSONObject().apply {
+            put("jsonrpc", "2.0")
+            put("id", requestId++)
+            put("method", "tools/call")
+            put("params", JSONObject().apply {
+                put("name", "mobile_use_device")
+                put("arguments", JSONObject().apply {
+                    put("device", "emulator-5554")
+                    put("deviceType", "android")
+                })
+            })
         }
-    }
 
-    // Get JSON command from Gemini
-    private suspend fun getJsonCommand(toolsList: String, task: String, prevResponse: String): String {
-        return try {
-            val prompt = """
-            Available tools: $toolsList
-            
-            Task to execute: $task
-            
-            Previous MCP response: $prevResponse
-            
-            Now just give the JSON output which I can send to the MCP server to execute the task.
-            Return only the JSON object, no other text.
-            
-            The JSON should follow this format:
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "tool_name",
-                    "arguments": {
-                        // tool arguments
-                    }
+        callMCPServer(deviceSelection) { result ->
+            serviceScope.launch {
+                if (result.contains("error")) {
+                    callback?.onError("Failed to select device: $result")
+                } else {
+                    Log.d("GeminiMcpService", "Device selected: $result")
+                    callback?.onStatusUpdate("Getting tools list...")
+                    getToolsList()
                 }
             }
-            """.trimIndent()
+        }
+    }
 
-            val response = generativeModel.generateContent(prompt)
+    private suspend fun getToolsList() {
+        val toolsListRequest = JSONObject().apply {
+            put("jsonrpc", "2.0")
+            put("id", requestId++)
+            put("method", "tools/list")
+            put("params", JSONObject())
+        }
+
+        callMCPServer(toolsListRequest) { result ->
+            serviceScope.launch {
+                if (result.contains("error")) {
+                    callback?.onError("Failed to get tools list: $result")
+                } else {
+                    toolsList = result
+                    Log.d("GeminiMcpService", "Tools list received: $toolsList")
+                    callback?.onStatusUpdate("Starting task execution...")
+                    startGeminiMcpLoop()
+                }
+            }
+        }
+    }
+
+    private suspend fun startGeminiMcpLoop() {
+        if (currentIteration >= maxIterations) {
+            callback?.onError("Maximum iterations reached. Task may be too complex.")
+            return
+        }
+
+        currentIteration++
+        callback?.onStatusUpdate("Processing step $currentIteration...")
+
+        val geminiPrompt = createGeminiPrompt()
+
+        try {
+            val response = generativeModel.generateContent(geminiPrompt)
             val responseText = response.text ?: ""
 
-            Log.d("GeminiMcpService", "JSON command response: $responseText")
+            Log.d("GeminiMcpService", "Gemini response: $responseText")
 
-            // Extract JSON from response (remove any extra text)
-            val jsonStart = responseText.indexOf("{")
-            val jsonEnd = responseText.lastIndexOf("}") + 1
+            // Check if Gemini indicates completion
+            if (responseText.contains("TASK_COMPLETED") ||
+                responseText.contains("\"status\": \"completed\"") ||
+                responseText.contains("task is complete")) {
+                callback?.onResponse("Task completed successfully!")
+                callback?.onCompleted()
+                return
+            }
 
-            if (jsonStart != -1 && jsonEnd > jsonStart) {
-                responseText.substring(jsonStart, jsonEnd)
+            // Try to extract JSON from Gemini response
+            val jsonResponse = extractJsonFromResponse(responseText)
+            if (jsonResponse != null) {
+                // Send to MCP server
+                callMCPServer(jsonResponse) { mcpResult ->
+                    serviceScope.launch {
+                        previousMcpResponses.add(mcpResult)
+                        Log.d("GeminiMcpService", "MCP response: $mcpResult")
+
+                        // Continue loop
+                        startGeminiMcpLoop()
+                    }
+                }
             } else {
-                responseText
+                callback?.onError("Failed to parse Gemini response as JSON: $responseText")
             }
 
         } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error getting JSON command", e)
-            ""
+            callback?.onError("Error communicating with Gemini: ${e.message}")
         }
     }
 
-    // Execute command on MCP server
-    private suspend fun executeMcpCommand(jsonCommand: String): String {
+    private fun createGeminiPrompt(): String {
+        return """
+            You are an AI assistant that controls mobile devices through an MCP server.
+            Your task is to help execute user queries by calling the appropriate mobile device tools.
+            
+            AVAILABLE TOOLS:
+            $toolsList
+            
+            USER QUERY: $currentUserQuery
+            
+            PREVIOUS MCP RESPONSES:
+            ${previousMcpResponses.joinToString("\n")}
+            
+            CRITICAL INSTRUCTIONS:
+            1. Respond with ONLY valid JSON - no markdown formatting, no code blocks, no extra text
+            2. If task is complete, respond with: {"status": "completed", "message": "Task completed successfully"}
+            3. Otherwise, respond with the exact MCP JSON format shown below
+            
+            RESPONSE FORMAT (choose one):
+            
+            For MCP tool call:
+            {"jsonrpc": "2.0", "id": $requestId, "method": "tools/call", "params": {"name": "tool_name", "arguments": {"param": "value"}}}
+            
+            For completion:
+            {"status": "completed", "message": "Task completed successfully"}
+            
+            IMPORTANT: 
+            - NO markdown formatting (no ```
+            - NO additional text or explanations
+            - ONLY JSON response
+            - Use exact tool names from the tools list
+            - Think about what action is needed next based on user query and previous responses
+                    """.trimIndent()
+    }
+
+    private fun extractJsonFromResponse(response: String): JSONObject? {
         return try {
-            val jsonObject = JSONObject(jsonCommand)
-            callMcpServerSync(jsonObject)
+            // Try to find JSON in the response
+            val trimmed = response.trim()
+
+            // Look for JSON object boundaries
+            val startIndex = trimmed.indexOf('{')
+            val endIndex = trimmed.lastIndexOf('}')
+
+            if (startIndex != -1 && endIndex != -1 && endIndex > startIndex) {
+                val jsonString = trimmed.substring(startIndex, endIndex + 1)
+                JSONObject(jsonString)
+            } else {
+                null
+            }
         } catch (e: Exception) {
-            Log.e("GeminiMcpService", "Error executing MCP command", e)
-            "Error: ${e.message}"
+            Log.e("GeminiMcpService", "Failed to parse JSON: ${e.message}")
+            null
         }
     }
 
-    // Synchronous call to MCP server
-    private suspend fun callMcpServerSync(params: JSONObject): String {
-        return try {
-            val body = RequestBody.create("application/json".toMediaTypeOrNull(), params.toString())
-            val request = Request.Builder()
-                .url("$mcpBaseUrl/")
-                .post(body)
-                .build()
+    private fun callMCPServer(params: JSONObject, callback: (String) -> Unit) {
+        val body = RequestBody.create("application/json".toMediaTypeOrNull(), params.toString())
+        val request = Request.Builder()
+            .url("$mcpBaseUrl/")
+            .post(body)
+            .build()
 
-            val response = client.newCall(request).execute()
-            response.body?.string() ?: "No response"
-        } catch (e: IOException) {
-            "Error: ${e.message}"
-        }
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                callback("Error: ${e.message}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val responseBody = response.body?.string() ?: "No response"
+                callback(responseBody)
+            }
+        })
     }
-
-    // Check if service is ready to execute tasks
-    fun isReady(): Boolean = isInitialized
 
     override fun onDestroy() {
         super.onDestroy()
         callback = null
-        isInitialized = false
     }
 }
